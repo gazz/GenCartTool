@@ -1,0 +1,1 @@
+## cli interface to homebuilt GenMemBlock that will remotely flash eeproms(or eventualy sram) & control Sega Genesys execution on the fly
