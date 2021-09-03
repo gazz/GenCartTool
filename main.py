@@ -220,28 +220,11 @@ def rom_read_test(ser, pages):
 
 
 def rom_read_test_slow(ser, pages):
+	logging.info("Reading {0} pages...".format(pages))
 	for i in range(pages):
 		read_page(ser, "{0:x}".format(i * 128))
-"""
-def rom_read_test_OLD(ser):
-	# read all the pages and check crc for each one against local
-	pages_to_test = 1024
-
-	for i in range(pages_to_test):
-		address = i * 128;
-		page_bytes = read_page(ser, address);
-		internal_crc = read_page_crc(ser, address);
-		local_crc = "{0:X}".format(calc_page_crc(page_bytes))
-
-		if local_crc != internal_crc:
-			logging.error("CRC mismatch on page: {0} expected {1} got {2}".format(i, internal_crc, local_crc))
-			return
-
-		# update status
-		logging.info("{0}/{1} [{2:d}%] pages verified successfuly".format(i, pages_to_test, int(i / pages_to_test * 100)))
-
-	logging.info("All {0} pages successfuly verified".format(pages_to_test))
-"""
+		logging.info("{0}/{1} pages verified".format(i+1, pages))
+	logging.info("All pages read and validated")
 
 def main():
     import argparse
