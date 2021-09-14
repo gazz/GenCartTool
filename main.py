@@ -4,12 +4,30 @@ import os
 from struct import pack
 import logging
 import serial
+import time
+
+OUTPUT_READ_BYTES = False
+# OUTPUT_READ_BYTES = True
 
 logging.basicConfig(format='%(asctime)s::%(levelname)s:: %(message)s',
     level=logging.INFO
     # level=logging.DEBUG
     )
 
+
+def get_serial(port, baud):
+	logging.debug("Opening serial with port: {0}, baud: {1}".format(port, baud))
+	ser = serial.Serial(port, baud, timeout=1)
+	# ser.xonxoff = True
+	logging.debug("Serial open, XONXOFF flow control: {0}".format(ser.xonxoff))
+	serial_wait_on(ser, "READY")
+
+	serial_write(ser, b'DEBUG_OFF\n')
+
+	serial_write(ser, b'PING\n')
+	serial_wait_on(ser, "PONG")
+
+	return ser
 def swap_bytes(input):
 	output = []
 	for i in range(0, len(input), 2):
@@ -30,15 +48,20 @@ def calc_page_crc(page_bytes, swap=True):
 		for j in range(8):
 			if crc & 1: crc = crc ^ CRC7_POLY
 			crc = crc >> 1
-		# print("{0}: {1:2X} {2}".format(i, page_bytes[i], crc))
+		# if i % 128 == 0:
+		# 	logging.debug("{0}: {1:X} {2}".format(i, page_bytes[i], crc))
 
 	return crc
 
-def serial_wait_on(ser, ack, error=None):
+def serial_wait_on(ser, ack, error=None, timeout=3):
     # waits until serial gives back the expected ack
+    start = time.time()
     while True:
         result = ser.readline().decode("utf-8").rstrip();
-        if len(result) == 0: continue
+        if len(result) == 0: 
+	        if time.time() > start + timeout:
+	        	raise Exception("Timed out while waiting for device to acknowledge request {0}".format(ack))
+        	continue
         # sys.stdout.write("<=========: {0}, expecting: {1}".format(result, ack))
         logging.debug("<========= {0}".format(result))
         if error is not None and result.startswith(error):
@@ -48,7 +71,13 @@ def serial_wait_on(ser, ack, error=None):
 
 def serial_write(ser, data):
     logging.debug("=========> {0}".format(data))
-    ser.write(data)
+    # send 64 bytes at a time & add a little wait in between as a hack to avoid buffer overrun, arduino serial does not have any flow control 
+    chunk_size = 128
+    for chunk in [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]:
+    	size_written = ser.write(chunk)
+    	# logging.debug("Wrote chunk of size: {0}, chunk: {1}".format(size_written, chunk))
+    	time.sleep(.003)
+
     ser.flush()
 
 def list_ports():
@@ -83,25 +112,17 @@ def serial_wait_byteline(ser, bytes_to_read):
 		output = ser.read_until()
 		result += output
 		bytes_read += len(output)
-		logging.debug("{0}/{1} bytes read".format(bytes_read, bytes_to_read))
+		logging.debug("{0}/{1} bytes read".format(bytes_read, bytes_to_read + 2))
 		if bytes_read < bytes_to_read: continue
 		break
 
-	logging.debug("Raw bytes: {0}".format(result))
-	logging.debug("Decoded bytes: {0}".format(result.hex()))
+	if OUTPUT_READ_BYTES:
+		logging.debug("Raw bytes: {0}".format(result))
+		logging.debug("Decoded bytes: {0}".format(result.hex()))
 	# logging.debug("Cut bytes: {0}".format(result[:bytes_to_read]))
 	return result[:bytes_to_read]
 		
 
-def get_serial(port, baud):
-	logging.debug("Opening serial with port: {0}, baud: {1}".format(port, baud))
-	ser = serial.Serial(port, baud, timeout=1)
-	serial_wait_on(ser, "READY")
-
-	serial_write(ser, b'PING\n')
-	serial_wait_on(ser, "PONG")
-
-	return ser
 
 def debug_info(ser):
 	serial_wait_on(ser, "READY")
@@ -117,47 +138,57 @@ def debug_info(ser):
 
 	logging.info("Info:: EEPROM: {0} of size: {1}".format(rom_name, rom_size))
 
-def read_page_crc(ser, address):
+def read_page_crc(ser, page):
 	serial_write(ser, b"READ_128_PAGE_CRC\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
-	serial_write(ser, bytes(str(address) + "\n", "utf-8"))
+	page_address = int(page) * 128
+	logging.debug("calculated page address: {0}".format(page_address))
+	serial_write(ser, bytes(str(page_address) + "\n", "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
 	crc = serial_wait_line(ser)
-	logging.debug("Page {0} CRC: {1}".format(address, crc))
+	logging.debug("Page {0} at address 0x{1} CRC: {2}".format(page, page_address, crc))
 	return crc
 
-def read_page(ser, address):
+def read_page(ser, page):
 	serial_write(ser, b"READ_128_PAGE\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
-	serial_write(ser, bytes(str(address) + "\n", "utf-8"))
+	page_address = int(page) * 128
+	logging.debug("calculated page address: {0}".format(page_address))
+	serial_write(ser, bytes("{0:x}".format(page_address) + "\n", "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
+
+	error = serial_wait_on(ser, "DATA_BEGIN", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
 	rom_bytes = serial_wait_line(ser)
-	logging.debug("EEPROM page at address {0}: {1}".format(address, rom_bytes.lower()))
-
-	# read_page_crc(ser, address)
-
-	# internal_crc = calc_page_crc(bytes.fromhex(rom_bytes));
-	# logging.info("Local calc CRC: {0:X}".format(internal_crc))
+	logging.debug("EEPROM page {0} at address 0x{1:x}: {2}".format(page, page_address, rom_bytes.lower()))
 	return bytes.fromhex(rom_bytes)
 
 def read_128_pages(ser, address, num_pages):
 	serial_write(ser, b"READ_128x128_PAGES\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
-	serial_write(ser, bytes(str(address) + "\n", "utf-8"))
+	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
 
 	serial_wait_on(ser, "AWAIT_PAGES_HEX")
-	serial_write(ser, bytes(str("{0:x}".format(num_pages)) + "\n", "utf-8"))
+	serial_write(ser, bytes("{0:x}\n".format(num_pages), "utf-8"))
 	error = serial_wait_on(ser, "ACK_PAGES", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	error = serial_wait_on(ser, "DATA_BEGIN", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
@@ -165,6 +196,10 @@ def read_128_pages(ser, address, num_pages):
 	buf_size = 128 * 2 * num_pages + 1
 	rom_bytes = serial_wait_byteline(ser, buf_size)
 	return [rom_bytes[:-1], rom_bytes[-1]]
+
+def read_pages(ser, start_page, num_pages):
+	res = read_128_pages(ser, start_page * 128, num_pages)
+	return res[0]
 
 def dumb_crc():
 	data = "7a3b4c2d"
@@ -176,37 +211,114 @@ def dumb_crc():
 	logging.info("Dumb calc CRC: {0}, expected: {1}".format(calculated_crc, expected_crc))
 
 def write_page(ser, address, page_bytes):
-
-	logging.info("Writing page to address {0}".format(address))
+	logging.debug("Writing page to address {0}".format(address))
 	serial_write(ser, b"WRITE_128_PAGE\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
-	serial_write(ser, bytes(address + "\n", "utf-8"))
+	serial_write(ser, bytes("{0:x}\n".format(int(address)), "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
 
-	serial_write(ser, page_bytes)
-	error = serial_wait_on(ser, "ACK_DATA_WRITE", "ERR")
+	error = serial_wait_on(ser, "AWAIT_DATA_HEX", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
-	logging.info("Page successfuly written to address {0}.".format(address))
 
-	logging.info("Page {0} verification result: <TODO>.".format(address))
+	serial_write(ser, bytes(page_bytes.hex(), "utf-8"))
+	logging.debug("Waiting for data write acknowldege")
+	error = serial_wait_on(ser, "ACK_DATA_WRITE", "ERR", timeout=30)
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+	logging.debug("Got data write acknowldege")
+
+	device_crc = int(serial_wait_line(ser), 16)
+	input_data_crc = calc_page_crc(page_bytes)
+	# logging.debug("Page bytes: {0}".format(page_bytes))
+
+	logging.debug("Page {0} CRC on device: {1}, sent data crc: {2}.".format(int(address/128), device_crc, input_data_crc))
+	if device_crc != input_data_crc:
+		logging.warning("Page {0} write failed, CRC mismatch, device: {1}, sent data crc: {2}".format(int(address/128), device_crc, input_data_crc))
+		return False
+
+	return True
+
 
 def write_test_page(ser, args):
-	address = args[0]
-	data = "0123456789abcdeffedcba9876543210" * 16
-	write_page(ser, address, bytes(data, "utf-8"))
+	pages = int(args if args is not None else 1)
+	data = b'\x01\x23\x45\x67\x89\xab\xcd\xef\xfe\xdc\xba\x98\x76\x54\x32\x10' * 16
+	logging.info("Writing {0} test pages with data: {1}".format(pages, data))
+	for i in range(pages):
+		write_page(ser, i * 128, data)
 
-	read_page(ser, address)
+def write_fill_page(ser, page, fillhex="00"):
+	data = bytes.fromhex("{0:02x}".format(int(fillhex[0:2], 16)) * 16 * 16)
+	write_page(ser, page * 128, data)
+
+def write_file(ser, filename):
+	rom_contents = []
+	start_address = 0
+	try:
+		with open(filename, mode="rb") as f:
+			rom_contents = f.read()
+			rom_size = len(rom_contents)
+			logging.info("Writing {0} Bytes to file {1}".format(rom_size, filename));
+
+			total_pages = int(rom_size / 256)
+			page = 0
+			while True:
+				bytes_to_write = rom_contents[:256]
+				if len(bytes_to_write) > 0:
+					rom_contents = rom_contents[256:]
+					logging.debug("writing page {0} with bytes: {1}".format(page, bytes_to_write.hex()))
+
+					page_address = page * 128
+					# retry block
+					retries = 3
+					retry = 1
+					while True:
+						result = write_page(ser, page_address, bytes_to_write)
+						if result:
+							break
+
+						elif retry < retries:
+							logging.warning("Retry: {0}".format(retry))
+							retry += 1
+							continue
+						else:
+							raise Exception("Error writing page {0} after {1} retries".format(page, retries))
+
+					logging.info("Page {0}/{1} successfuly written to address {2} [{3:.2f}%]"
+						.format(page + 1, total_pages, page_address, ((page + 1)/total_pages * 100)))
+
+					page += 1
+				else:
+					break;
+
+	except Exception as err:
+		logging.error("Got error: {0}".format(err))
+		return None
+
+	logging.info("{0} Bytes written from file {1}".format(rom_size, filename))
+
+def rom_read_test_slow(ser, pages):
+	logging.info("Reading {0} pages...".format(pages))
+	for i in range(pages):
+		read_page(ser, "{0:x}".format(i * 128))
+		logging.info("{0}/{1} pages verified".format(i+1, pages))
+
+	logging.info("All pages read and validated")
 
 def rom_read_test(ser, pages):
 	# read all the pages and check crc for each one against local
-	logging.info("Reading {0} pages...".format(pages))
+	logging.info("Reading a total of {0} pages...".format(pages))
 	for i in range(0, pages, 128):
-		[chunk_bytes, internal_crc] = read_128_pages(ser, "{0:x}".format(i * 128), min(pages, 128))
+		# max(i, min(pages % 128, 128))
+		pages_to_read = 128 if i < pages - 128 else pages % 128
+
+		logging.info("Chunked read of {0} pages".format(pages_to_read))
+		[chunk_bytes, internal_crc] = read_128_pages(ser, "{0:x}".format(i * 128), pages_to_read)
 		internal_crc = "{0:X}".format(internal_crc)
 		local_crc = "{0:X}".format(calc_page_crc(chunk_bytes, True))
 		if local_crc != internal_crc:
@@ -214,17 +326,184 @@ def rom_read_test(ser, pages):
 			logging.debug("Raw bytes: {0}".format(chunk_bytes.hex()))
 			return
 
-		logging.info("{0}/{1} pages verified".format(i + 128, pages))
+		logging.info("{0}/{1} pages verified".format(pages, pages))
 
 	logging.info("All pages read and validated")
 
 
-def rom_read_test_slow(ser, pages):
-	logging.info("Reading {0} pages...".format(pages))
-	for i in range(pages):
-		read_page(ser, "{0:x}".format(i * 128))
-		logging.info("{0}/{1} pages verified".format(i+1, pages))
-	logging.info("All pages read and validated")
+def verify_rom(ser, filename):
+	# verifies that EEPROM has the contents of the file
+	logging.info("Verifying file {0} contents against EEPROM on device".format(filename))
+	try:
+		with open(filename, mode="rb") as f:
+			rom_contents = f.read()
+			rom_size = len(rom_contents)
+			logging.info("Verifying {0} bytes from file {1}".format(rom_size, filename));
+
+			total_pages = int(rom_size / 256)
+
+			for start_page in range(0, total_pages, 128):
+				# pages_to_read = 128 if start_page < total_pages - 128 else total_pages % 128
+				pages_to_read = 128
+
+
+				logging.info("Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+				[chunk_bytes, device_crc] = read_128_pages(ser, start_page * 128, pages_to_read)
+				verification_bytes = rom_contents[:pages_to_read * 256]
+				rom_contents = rom_contents[pages_to_read * 256:]
+				file_crc = calc_page_crc(verification_bytes)
+	
+
+				# logging.debug("Device Bytes: {0}\nFile Bytes: {1}".format(chunk_bytes, verification_bytes))
+				# logging.debug("Device CRC: {0}, File CRC: {1}".format(device_crc, file_crc))
+
+				if file_crc != device_crc:
+					logging.error("Page failed CRC: EEPROM: {0}".format(hex_format(chunk_bytes.hex())))
+					logging.error("Page failed CRC: BIN: {0}".format(hex_format(verification_bytes.hex())))
+					logging.error("Page failed CRC: Hexes matc?: {0}".format(verification_bytes.hex() == chunk_bytes.hex()))
+					raise Exception("CRC mismatch at page {0}, device CRC: {1}, file CRC: {2}".format(start_page, device_crc, file_crc))
+				logging.info("SUCCESS Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+
+	except Exception as err:
+		logging.error("Got error: {0}".format(err))
+		raise err
+		return None
+
+	logging.info("{0} Bytes verified against file {1}".format(rom_size, filename))
+
+
+def dump_rom(ser, filename, num_bytes):
+	# verifies that EEPROM has the contents of the file
+	logging.info("Dumping rom into file {0} with the contents from EEPROM on device".format(filename))
+	try:
+		with open(filename, mode="wb") as wf:
+			# write bin file from rom based on the size returned by the gencart
+			# get rom size
+
+			serial_write(ser, b"READ_ROM_NAME\n")
+			rom_name = serial_wait_line(ser)
+			serial_write(ser, b"READ_ROM_SIZE\n")
+			rom_size = int(serial_wait_line(ser), 16)
+
+			bytes_to_dump = int(num_bytes) if num_bytes > 0 else rom_size
+			logging.info("Info:: EEPROM: {0} of size: {1}, reading {2} [{3}] bytes".format(rom_name, rom_size, bytes_to_dump, num_bytes))
+
+
+			page_size_in_words = 128
+			pages_per_fetch = 128
+			for page_start_address in range(0, int(bytes_to_dump/2), pages_per_fetch * page_size_in_words):
+				[chunk_bytes, device_crc] = read_128_pages(ser, page_start_address, pages_per_fetch)
+				wf.write(chunk_bytes)
+
+				bytes_dumped = (page_start_address + pages_per_fetch * page_size_in_words) * 2
+				logging.info("Dumped {0}/{1} [{2:.2f}%] bytes".format(bytes_dumped,
+					bytes_to_dump, bytes_dumped / bytes_to_dump * 100))
+
+			# total_pages = int(rom_size / 256)
+
+			# for start_page in range(0, total_pages, 128):
+			# 	pages_to_read = 128 if start_page < total_pages - 128 else total_pages % 128
+			# 	logging.info("Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+			# 	[chunk_bytes, device_crc] = read_128_pages(ser, "{0:x}".format(start_page * 128), pages_to_read)
+			# 	verification_bytes = rom_contents[:pages_to_read * 256]
+			# 	rom_contents = rom_contents[pages_to_read * 256:]
+			# 	file_crc = calc_page_crc(verification_bytes)
+	
+
+			# 	# logging.debug("Device Bytes: {0}\nFile Bytes: {1}".format(chunk_bytes, verification_bytes))
+			# 	# logging.debug("Device CRC: {0}, File CRC: {1}".format(device_crc, file_crc))
+
+			# 	if file_crc != device_crc:
+			# 		raise Exception("CRC mismatch at page {0}, device CRC: {1}, file CRC: {2}".format(start_page, device_crc, file_crc))
+			# 	logging.info("SUCCESS Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+
+	except Exception as err:
+		logging.error("Got error: {0}".format(err))
+		raise err
+		return None
+
+	logging.info("{0} Bytes dumped to file {1}".format(bytes_to_dump, filename))
+
+def generate_test_rom(filename, pages):
+	try:
+		pages = max(1, pages)
+		bytes_written = 0
+		import random
+		with open(filename, mode="bw") as f:
+			for val in range(pages * 256):
+				val = random.randint(0, 65535)
+				# + min(0, (page - 1 % 128))
+				data = val.to_bytes(2, 'big')
+				bytes_written += 2
+				f.write(data)
+
+			# for page in range(pages):
+			# 	for b in range(128):
+			# 		# + min(0, (page - 1 % 128))
+			# 		data = bytes([page & (0xff - b), b])
+			# 		bytes_written += 2
+			# 		f.write(data)
+
+		logging.info("Written {0} bytes to {1} [{2} pages]".format(bytes_written, filename, pages))
+
+	except Exception as err:
+		logging.error("Got error: {0}".format(err))
+		raise err
+		return None
+
+def lock_address(ser, address):
+	logging.debug("Locking eeprom address {0}".format(address))
+	serial_write(ser, b"LOCK_ADDRESS\n")
+	serial_wait_on(ser, "AWAIT_ADDR_HEX")
+	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
+	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	error = serial_wait_on(ser, "ADDR_LOCKED", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+def lock_address_and_data(ser, address, word):
+	logging.debug("Locking eeprom address {0}".format(address))
+	serial_write(ser, b"LOCK_ADDRESS_AND_DATA\n")
+	serial_wait_on(ser, "AWAIT_ADDR_HEX")
+	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
+	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	serial_wait_on(ser, "AWAIT_DATA_HEX")
+	serial_write(ser, bytes("{0:04x}\n".format(word), "utf-8"))
+	error = serial_wait_on(ser, "ACK_DATA", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	error = serial_wait_on(ser, "ADDR_AND_DATA_LOCKED", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+def write_protect(ser, enable):
+	if enable:
+		serial_write(ser, b"ENABLE_WRITE_PROTECT\n")
+		serial_wait_on(ser, "WRITE_PROTECT_ENABLED")
+	else:
+		serial_write(ser, b"DISABLE_WRITE_PROTECT\n")
+		serial_wait_on(ser, "WRITE_PROTECT_DISABLED")
+
+
+def hex_format(input_str):
+	s = ""
+	for i in range(0, len(input_str), 4):
+		if i % 64 == 0:
+			s += "\n"
+		s += input_str[i:i+4] + " "
+	return s
 
 def main():
     import argparse
@@ -243,9 +522,15 @@ def main():
         help='action to perform, available actions: debug_info, read_page [address]')
 
     parser.add_argument(
-        'action_args',
+        'action_arg',
         nargs='?',
-        help='action args')
+        help='action arg')
+
+    parser.add_argument(
+        'action_arg2',
+        nargs='?',
+        help='action arg2',
+        default=0)
 
     parser.add_argument(
         '--baud',
@@ -265,6 +550,9 @@ def main():
     if args.listports == True:
         list_ports()
         return
+    elif args.action == "generate_test_rom":
+    	generate_test_rom(args.action_arg, int(args.action_arg2))
+    	return
 
     if args.action == "dumb_crc":
     	dumb_crc()
@@ -274,17 +562,35 @@ def main():
     if args.action == "debug_info":
     	debug_info(ser)
     elif args.action == "read_page":
-    	read_page(ser, args.action_args)
+    	logging.info("{0}".format(hex_format(read_page(ser, args.action_arg).hex())))
     elif args.action == "read_page_crc":
-    	read_page_crc(ser, args.action_args)
+    	logging.info("{0}".format(read_page_crc(ser, args.action_arg)))
+    elif args.action == "read_pages":
+    	logging.info("{0}".format(hex_format(read_pages(ser, int(args.action_arg), int(args.action_arg2)).hex())))
     elif args.action == "write_test_page":
-    	write_test_page(ser, args.action_args)
+    	write_test_page(ser, args.action_arg)
+    elif args.action == "write_fill_page":
+    	write_fill_page(ser, int(args.action_arg), args.action_arg2)
+    elif args.action == "write_file":
+    	write_file(ser, args.action_arg)
     elif args.action == "rom_read_test":
-    	rom_read_test(ser, int(args.action_args))
+    	rom_read_test(ser, int(args.action_arg))
     elif args.action == "rom_read_test_slow":
-    	rom_read_test_slow(ser, int(args.action_args))
+    	rom_read_test_slow(ser, int(args.action_arg))
+    elif args.action == "verify_rom":
+    	verify_rom(ser, args.action_arg)
+    elif args.action == "dump_rom":
+    	dump_rom(ser, args.action_arg, args.action_arg2)
+    elif args.action == "lock_address":
+    	lock_address(ser, int(args.action_arg))
+    elif args.action == "lock_address_and_data":
+    	lock_address_and_data(ser, int(args.action_arg), int(args.action_arg2))
+    elif args.action == "disable_write_protect":
+    	write_protect(ser, False)
+    elif args.action == "enable_write_protect":
+    	write_protect(ser, True)
     else:
-    	logging.debug("Invalid action: {0}".format(action))
+    	logging.debug("Invalid action: {0}".format(args.action))
     # flash_rom(args.port, args.baud, args.romfile)
     pass
 
