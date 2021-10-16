@@ -456,7 +456,7 @@ def verify_rom(ser, filename):
 				if start_page + 128 > total_pages:
 					pages_to_read = total_pages - start_page
 
-				logging.info("Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+				logging.info("Verifying {0} bytes at address {1}...".format(pages_to_read * 256, start_page * 128));
 				[chunk_bytes, device_crc] = read_128_pages(ser, start_page * 128, pages_to_read)
 				verification_bytes = rom_contents[:pages_to_read * 256]
 				rom_contents = rom_contents[pages_to_read * 256:]
@@ -475,7 +475,8 @@ def verify_rom(ser, filename):
 					diff.show_diff(chunk_bytes, verification_bytes, address_offset=start_page * 256)
 					# logging.debug("File Bytes: {1}\nDevice Bytes: {0}".format(hex_format(chunk_bytes.hex()), hex_format(verification_bytes.hex())))
 					raise Exception("CRC mismatch at page {0}, device CRC: {1}, file CRC: {2}".format(start_page, device_crc, file_crc))
-				logging.info("SUCCESS Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
+				verified_percentage = int((start_page + 128) / total_pages * 100);
+				logging.info("SUCCESS Verifying {0} bytes at address {1} [{2}%]".format(pages_to_read * 256, start_page * 128, verified_percentage));
 
 	except Exception as err:
 		logging.error("Got error: {0}".format(err))
@@ -697,8 +698,8 @@ def main():
     	return
 
     if args.action == "diff_test":
-		diff.test()
-		return
+    	diff.test()
+    	return
 
     ser = get_serial(args.port, args.baud)
     if args.action == "debug_info":
