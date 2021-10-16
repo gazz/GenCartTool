@@ -5,6 +5,11 @@ from struct import pack
 import logging
 import serial
 import time
+import diff
+
+# DEFAULT_BAUD=500000
+DEFAULT_BAUD=115200
+# DEFAULT_BAUD=19200
 
 OUTPUT_READ_BYTES = False
 # OUTPUT_READ_BYTES = True
@@ -198,8 +203,13 @@ def read_128_pages(ser, address, num_pages):
 	return [rom_bytes[:-1], rom_bytes[-1]]
 
 def read_pages(ser, start_page, num_pages):
-	res = read_128_pages(ser, start_page * 128, num_pages)
-	return res[0]
+	total_res = bytes()
+	pages_per_read = 1
+	for p in range(start_page, start_page + num_pages, pages_per_read):
+		res = read_128_pages(ser, p * 128, pages_per_read)
+		total_res += res[0]
+
+	return total_res
 
 def dumb_crc():
 	data = "7a3b4c2d"
@@ -461,8 +471,9 @@ def verify_rom(ser, filename):
 					logging.error("Page failed CRC: EEPROM: {0}".format(hex_format(chunk_bytes[fail_index - 10: fail_index + 10].hex())))
 					logging.error("Page failed CRC: BIN: {0}".format(hex_format(verification_bytes[fail_index - 10: fail_index + 10].hex())))
 
-
-					logging.debug("Device Bytes: {0}\nFile Bytes: {1}".format(hex_format(chunk_bytes.hex()), hex_format(verification_bytes.hex())))
+					# logging.debug("Diff:\n {0}".format(diff.show_diff(chunk_bytes, verification_bytes)))
+					diff.show_diff(chunk_bytes, verification_bytes, address_offset=start_page * 256)
+					# logging.debug("File Bytes: {1}\nDevice Bytes: {0}".format(hex_format(chunk_bytes.hex()), hex_format(verification_bytes.hex())))
 					raise Exception("CRC mismatch at page {0}, device CRC: {1}, file CRC: {2}".format(start_page, device_crc, file_crc))
 				logging.info("SUCCESS Verifying {0} bytes at address {1}".format(pages_to_read * 256, start_page * 128));
 
@@ -664,7 +675,7 @@ def main():
         nargs='?',
         help='set baud rate, default: %(default)s',
         # default=57600
-        default=115200
+        default=DEFAULT_BAUD
         )
 
     parser.add_argument(
@@ -684,6 +695,10 @@ def main():
     if args.action == "dumb_crc":
     	dumb_crc()
     	return
+
+    if args.action == "diff_test":
+		diff.test()
+		return
 
     ser = get_serial(args.port, args.baud)
     if args.action == "debug_info":
