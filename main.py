@@ -7,16 +7,24 @@ import serial
 import time
 import diff
 
-# DEFAULT_BAUD=500000
-DEFAULT_BAUD=115200
+# DEFAULT_BAUD=1000000
+DEFAULT_BAUD=500000
+# DEFAULT_BAUD=115200
 # DEFAULT_BAUD=19200
 
 OUTPUT_READ_BYTES = False
 # OUTPUT_READ_BYTES = True
 
+# FULL_DEBUG = False
+FULL_DEBUG = True
+
+DEVICE_LOG = FULL_DEBUG or False
+DEVICE_DEBUG = FULL_DEBUG or False
+
+
 logging.basicConfig(format='%(asctime)s::%(levelname)s:: %(message)s',
-    level=logging.INFO
-    # level=logging.DEBUG
+    # level=logging.INFO
+    level= logging.DEBUG if DEVICE_LOG else logging.INFO
     )
 
 
@@ -27,12 +35,15 @@ def get_serial(port, baud):
 	logging.debug("Serial open, XONXOFF flow control: {0}".format(ser.xonxoff))
 	serial_wait_on(ser, "READY")
 
-	serial_write(ser, b'DEBUG_OFF\n')
+	if not DEVICE_DEBUG:
+		serial_write(ser, b'DEBUG_OFF\n')
 
 	serial_write(ser, b'PING\n')
 	serial_wait_on(ser, "PONG")
 
 	return ser
+
+
 def swap_bytes(input):
 	output = []
 	for i in range(0, len(input), 2):
@@ -81,7 +92,7 @@ def serial_write(ser, data):
     for chunk in [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]:
     	size_written = ser.write(chunk)
     	# logging.debug("Wrote chunk of size: {0}, chunk: {1}".format(size_written, chunk))
-    	time.sleep(.003)
+    	time.sleep(.01)
 
     ser.flush()
 
@@ -98,8 +109,12 @@ def list_ports():
     hits = 0
 
     # list them
+    ports = []
     for n, (port, desc, hwid) in enumerate(iterator, 1):
-        sys.stdout.write("{:20}\n".format(port))
+    	ports.append(port)
+        # sys.stdout.write("{:20}\n".format(port))
+
+    return ports 
 
 def serial_wait_line(ser):
 	while True:
@@ -157,8 +172,8 @@ def read_page_crc(ser, page):
 	logging.debug("Page {0} at address 0x{1} CRC: {2}".format(page, page_address, crc))
 	return crc
 
-def read_page(ser, page):
-	serial_write(ser, b"READ_128_PAGE\n")
+def read_page(ser, page, cart=False):
+	serial_write(ser, b"READ_128_PAGE\n" if cart == False else b"CART_READ_128_PAGE\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
 	page_address = int(page) * 128
 	logging.debug("calculated page address: {0}".format(page_address))
@@ -177,8 +192,8 @@ def read_page(ser, page):
 	logging.debug("EEPROM page {0} at address 0x{1:x}: {2}".format(page, page_address, rom_bytes.lower()))
 	return bytes.fromhex(rom_bytes)
 
-def read_128_pages(ser, address, num_pages):
-	serial_write(ser, b"READ_128x128_PAGES\n")
+def read_128_pages(ser, address, num_pages, cart=False):
+	serial_write(ser, b"READ_128x128_PAGES\n" if not cart else b"CART_READ_128x128_PAGES\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
 	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
@@ -202,9 +217,10 @@ def read_128_pages(ser, address, num_pages):
 	rom_bytes = serial_wait_byteline(ser, buf_size)
 	return [rom_bytes[:-1], rom_bytes[-1]]
 
-def read_pages(ser, start_page, num_pages):
+def read_pages(ser, start_page, num_pages, cart=False):
 	total_res = bytes()
 	pages_per_read = 1
+	logging.info("Reading pages from start page: {0}, num pages: {1}, pages per read: {2} cart?: {3}".format(start_page, num_pages, pages_per_read, cart))
 	for p in range(start_page, start_page + num_pages, pages_per_read):
 		res = read_128_pages(ser, p * 128, pages_per_read)
 		total_res += res[0]
@@ -287,8 +303,7 @@ def write_pages(ser, address, data):
 		if (len(page_bytes) < bytes_per_write):
 			pad_bytes = bytes_per_write - len(page_bytes)
 			page_bytes += b"\xff" * pad_bytes
-			logging.info("Padding chunk write with {0} bytes: {1}".format(pad_bytes, page_bytes))
-
+			# logging.debug("Padding chunk write with {0} bytes: {1}".format(pad_bytes, page_bytes))
 
 
 		serial_write(ser, bytes(page_bytes.hex(), "utf-8"))
@@ -440,7 +455,7 @@ def mismatch_index(a, b):
 	return -1
 
 
-def verify_rom(ser, filename):
+def verify_rom(ser, filename, cart=False):
 	# verifies that EEPROM has the contents of the file
 	logging.info("Verifying file {0} contents against EEPROM on device".format(filename))
 	try:
@@ -457,7 +472,7 @@ def verify_rom(ser, filename):
 					pages_to_read = total_pages - start_page
 
 				logging.info("Verifying {0} bytes at address {1}...".format(pages_to_read * 256, start_page * 128));
-				[chunk_bytes, device_crc] = read_128_pages(ser, start_page * 128, pages_to_read)
+				[chunk_bytes, device_crc] = read_128_pages(ser, start_page * 128, pages_to_read, cart)
 				verification_bytes = rom_contents[:pages_to_read * 256]
 				rom_contents = rom_contents[pages_to_read * 256:]
 				file_crc = calc_page_crc(verification_bytes)
@@ -475,7 +490,7 @@ def verify_rom(ser, filename):
 					diff.show_diff(chunk_bytes, verification_bytes, address_offset=start_page * 256)
 					# logging.debug("File Bytes: {1}\nDevice Bytes: {0}".format(hex_format(chunk_bytes.hex()), hex_format(verification_bytes.hex())))
 					raise Exception("CRC mismatch at page {0}, device CRC: {1}, file CRC: {2}".format(start_page, device_crc, file_crc))
-				verified_percentage = int((start_page + 128) / total_pages * 100);
+				verified_percentage = int(min(start_page + 128, total_pages) / total_pages * 100);
 				logging.info("SUCCESS Verifying {0} bytes at address {1} [{2}%]".format(pages_to_read * 256, start_page * 128, verified_percentage));
 
 	except Exception as err:
@@ -567,9 +582,9 @@ def generate_test_rom(filename, pages):
 		raise err
 		return None
 
-def lock_address(ser, address):
+def lock_address(ser, address, cart=False):
 	logging.debug("Locking eeprom address {0}".format(address))
-	serial_write(ser, b"LOCK_ADDRESS\n")
+	serial_write(ser, b"LOCK_ADDRESS\n" if not cart else b"CART_LOCK_ADDRESS\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
 	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
@@ -644,6 +659,9 @@ def hex_format(input_str):
 		s += input_str[i:i+4] + " "
 	return s
 
+def select_port(input_port):
+	return list_ports()[-1]
+
 def main():
     import argparse
     
@@ -651,13 +669,7 @@ def main():
         description='gencart util - A simple terminal program to interact with gencart eeprom/genesys via serial port on arduino.')
 
     parser.add_argument(
-        'port',
-        nargs='?',
-        help='serial port name ("-" to show port list)')
-
-    parser.add_argument(
         'action',
-        nargs='?',
         help='action to perform, available actions: debug_info, read_page [address]')
 
     parser.add_argument(
@@ -684,11 +696,16 @@ def main():
         help='lists available serial ports',
         action="store_true")
 
+    parser.add_argument(
+        '--port',
+        help='serial port name ("-" to show port list)')
+
     args = parser.parse_args()
 
     if args.listports == True:
-        list_ports()
-        return
+    	for port in list_ports():
+    		sys.stdout.write("{:20}\n".format(port))
+    	return
     elif args.action == "generate_test_rom":
     	generate_test_rom(args.action_arg, int(args.action_arg2))
     	return
@@ -701,7 +718,9 @@ def main():
     	diff.test()
     	return
 
-    ser = get_serial(args.port, args.baud)
+    port = select_port(args.port)
+
+    ser = get_serial(port, args.baud)
     if args.action == "debug_info":
     	debug_info(ser)
     elif args.action == "read_page":
@@ -738,6 +757,18 @@ def main():
     	genesis_reset_set(ser, True)
     elif args.action == "genesis_reset_release":
     	genesis_reset_set(ser, False);
+
+    # cart actions
+    elif args.action == "read_page_cart":
+    	logging.info("{0}".format(hex_format(read_page(ser, args.action_arg, True).hex())))
+    elif args.action == "read_pages_cart":
+    	logging.info("{0}".format(hex_format(read_pages(ser, int(args.action_arg), int(args.action_arg2), True).hex())))
+    elif args.action == "lock_address_cart":
+    	lock_address(ser, int(args.action_arg), True)
+
+    elif args.action == "verify_file_cart":
+    	verify_rom(ser, args.action_arg, True)
+
     else:
     	logging.error("Invalid action: {0}".format(args.action))
     # flash_rom(args.port, args.baud, args.romfile)
