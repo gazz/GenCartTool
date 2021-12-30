@@ -40,6 +40,7 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 def debug_format(input_bytes, expected_bytes, diff, inline_correction=True, failues_only=True, address_offset=0):
+
 	# failed_ranges = [range(r["start"], r["end"] + 1) for r in diff if diff["match"] == False]
 	failed_ranges = [range(r["start"], r["end"] + 1) for r in diff if r["match"] == False]
 	failed_indexes = [idx for subrange in failed_ranges for idx in subrange]
@@ -91,6 +92,7 @@ def debug_format(input_bytes, expected_bytes, diff, inline_correction=True, fail
 
 def show_diff(bytes1, bytes2, address_offset=0):
 	diff = diff_bytearrays(bytes1, bytes2)
+	logging.info("Generating full page diff, this can take up to 30 seconds...")
 	output_str = debug_format(bytes1, bytes2, diff, address_offset=address_offset)
 	logging.info("\n" + output_str)
 

@@ -15,8 +15,8 @@ DEFAULT_BAUD=500000
 OUTPUT_READ_BYTES = False
 # OUTPUT_READ_BYTES = True
 
-# FULL_DEBUG = False
-FULL_DEBUG = True
+FULL_DEBUG = False
+# FULL_DEBUG = True
 
 DEVICE_LOG = FULL_DEBUG or False
 DEVICE_DEBUG = FULL_DEBUG or False
@@ -81,7 +81,8 @@ def serial_wait_on(ser, ack, error=None, timeout=3):
         # sys.stdout.write("<=========: {0}, expecting: {1}".format(result, ack))
         logging.debug("<========= {0}".format(result))
         if error is not None and result.startswith(error):
-        	return result
+            return result
+        # logging.debug("got '{0}' expected '{1}', got match: {2}".format(result, ack, ack == result))
         if result == ack:
             return
 
@@ -222,7 +223,7 @@ def read_pages(ser, start_page, num_pages, cart=False):
 	pages_per_read = 1
 	logging.info("Reading pages from start page: {0}, num pages: {1}, pages per read: {2} cart?: {3}".format(start_page, num_pages, pages_per_read, cart))
 	for p in range(start_page, start_page + num_pages, pages_per_read):
-		res = read_128_pages(ser, p * 128, pages_per_read)
+		res = read_128_pages(ser, p * 128, pages_per_read, cart)
 		total_res += res[0]
 
 	return total_res
@@ -609,6 +610,7 @@ def lock_address_and_data(ser, address, word):
 
 	serial_wait_on(ser, "AWAIT_DATA_HEX")
 	serial_write(ser, bytes("{0:04x}\n".format(word), "utf-8"))
+	
 	error = serial_wait_on(ser, "ACK_DATA", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
