@@ -146,7 +146,7 @@ def serial_wait_byteline(ser, bytes_to_read):
 
 
 def debug_info(ser):
-	serial_wait_on(ser, "READY")
+	# serial_wait_on(ser, "READY")
 
 	serial_write(ser, b'PING\n')
 	serial_wait_on(ser, "PONG")
@@ -154,9 +154,10 @@ def debug_info(ser):
 
 	serial_write(ser, b"READ_ROM_NAME\n")
 	rom_name = serial_wait_line(ser)
-	serial_write(ser, b"READ_ROM_SIZE\n")
-	rom_size = serial_wait_line(ser)
+	# serial_write(ser, b"READ_ROM_SIZE\n")
+	# rom_size = serial_wait_line(ser)
 
+	rom_size = 0;
 	logging.info("Info:: EEPROM: {0} of size: {1}".format(rom_name, rom_size))
 
 def read_page_crc(ser, page):
@@ -330,6 +331,7 @@ def write_pages(ser, address, data):
 	logging.debug("Got data write acknowldege")
 
 	device_crc = int(serial_wait_line(ser), 16)
+	# device_crc = serial_wait_line(ser)
 	input_data_crc = crc
 
 	logging.debug("CRC on device: {0}, sent data crc: {1}.".format(device_crc, input_data_crc))
@@ -630,6 +632,23 @@ def write_protect(ser, enable):
 		serial_wait_on(ser, "WRITE_PROTECT_DISABLED")
 
 
+def sd_files_list(ser):
+	serial_write(ser, b"LIST_SD_FILES\n")
+	serial_wait_on(ser, "ACK")
+	pass
+
+def sd_rom_flash(ser, rom_index):
+	serial_write(ser, b"FLASH_SD_ROM\n")
+	serial_wait_on(ser, "AWAIT_ADDR_HEX")
+	serial_write(ser, bytes("{0:x}\n".format(rom_index), "utf-8"))
+	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	serial_wait_on(ser, "ACK")
+	pass
+
 # Sega Genesis
 
 
@@ -769,7 +788,13 @@ def main():
     	lock_address(ser, int(args.action_arg), True)
 
     elif args.action == "verify_file_cart":
-    	verify_rom(ser, args.action_arg, True)
+        verify_rom(ser, args.action_arg, True)
+
+    # sd card actions
+    elif args.action == "sd_files_list":
+        logging.info(sd_files_list(ser));
+    elif args.action == "sd_file_flash":
+        logging.info(sd_rom_flash(ser, int(args.action_arg)));
 
     else:
     	logging.error("Invalid action: {0}".format(args.action))
