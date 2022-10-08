@@ -14,7 +14,7 @@ python main.py write_fill_page 0 ad
 python main.py write_file mspacman.bin 
 python main.py verify_file mspacman.bin 
 python main.py read_pages 0 5
-python main.py write_file test
+python main.py write_file test.bin
 python main.py verify_file test.bin 
 python main.py generate_test_rom test.bin 64
 

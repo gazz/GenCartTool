@@ -7,7 +7,6 @@ import serial
 import time
 import diff
 
-# DEFAULT_BAUD=1000000
 DEFAULT_BAUD=500000
 # DEFAULT_BAUD=115200
 # DEFAULT_BAUD=19200
@@ -30,7 +29,7 @@ logging.basicConfig(format='%(asctime)s::%(levelname)s:: %(message)s',
 
 def get_serial(port, baud):
 	logging.debug("Opening serial with port: {0}, baud: {1}".format(port, baud))
-	ser = serial.Serial(port, baud, timeout=1)
+	ser = serial.Serial(port, baud, timeout=6)
 	# ser.xonxoff = True
 	logging.debug("Serial open, XONXOFF flow control: {0}".format(ser.xonxoff))
 	serial_wait_on(ser, "READY")
@@ -143,6 +142,11 @@ def serial_wait_byteline(ser, bytes_to_read):
 	# logging.debug("Cut bytes: {0}".format(result[:bytes_to_read]))
 	return result[:bytes_to_read]
 		
+
+def ping(ser):
+	serial_write(ser, b'PING\n')
+	serial_wait_on(ser, "PONG")
+	logging.info("Got ping response from the device")
 
 
 def debug_info(ser):
@@ -272,11 +276,14 @@ def write_page(ser, address, page_bytes):
 
 	return True
 
-def write_pages(ser, address, data):
+def write_pages(ser, address, data, hex=True):
 	num_pages = int(len(data)/256)
 	logging.debug("Writing {0} pages ({1} bytes) to address {2}".format(num_pages, len(data), address))
 
-	serial_write(ser, b"WRITE_128X_PAGES\n")
+	if hex:
+		serial_write(ser, b"WRITE_128X_PAGES_HEX\n")
+	else:
+		serial_write(ser, b"WRITE_128X_PAGES\n")
 	serial_wait_on(ser, "AWAIT_ADDR_HEX")
 	serial_write(ser, bytes("{0:x}\n".format(int(address)), "utf-8"))
 	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
@@ -307,8 +314,11 @@ def write_pages(ser, address, data):
 			page_bytes += b"\xff" * pad_bytes
 			# logging.debug("Padding chunk write with {0} bytes: {1}".format(pad_bytes, page_bytes))
 
-
-		serial_write(ser, bytes(page_bytes.hex(), "utf-8"))
+		if hex:
+			serial_write(ser, bytes(page_bytes.hex(), "utf-8"))
+		else:
+			serial_write(ser, page_bytes)
+		
 		data = data[256 * pages_per_write:]
 
 		error = serial_wait_on(ser, "ACK_DATA", "ERR")
@@ -319,7 +329,7 @@ def write_pages(ser, address, data):
 		logging.info("Page {0}/{1} successfuly written [{2:.2f}%]"
 			.format(page + 1, num_pages, ((page + 1)/num_pages * 100)))
 
-		crc = calc_page_crc(page_bytes, start_crc=crc)
+		crc = calc_page_crc(page_bytes, swap=False, start_crc=crc)
 		logging.debug("Current local crc: {0:x}".format(crc))
 
 
@@ -338,6 +348,9 @@ def write_pages(ser, address, data):
 	if device_crc != input_data_crc:
 		logging.warning("Multi page write failed, CRC mismatch, device: {0}, sent data crc: {1}".format(device_crc, input_data_crc))
 		return False
+
+	metrics = serial_wait_line(ser)
+	logging.info("Metrics: {}".format(metrics))
 
 	return True
 
@@ -399,7 +412,7 @@ def write_file_slow(ser, filename):
 
 	logging.info("{0} Bytes written from file {1}".format(rom_size, filename))
 
-def write_file_fast(ser, filename):
+def write_file_fast(ser, filename, hex):
 	rom_contents = []
 	start_address = 0
 	try:
@@ -408,7 +421,7 @@ def write_file_fast(ser, filename):
 			rom_size = len(rom_contents)
 			logging.info("Writing {0} bytes to rom from file {1}".format(rom_size, filename));
 
-			result = write_pages(ser, 0, rom_contents)
+			result = write_pages(ser, 0, rom_contents, hex)
 
 	except Exception as err:
 		logging.error("Got error: {0}".format(err))
@@ -416,9 +429,9 @@ def write_file_fast(ser, filename):
 
 	logging.info("{0} Bytes written from file {1}".format(rom_size, filename))
 
-def write_file(ser, filename):
+def write_file(ser, filename, hex=False):
 	# write_file_fast(ser, filename)
-	write_file_fast(ser, filename)
+	write_file_fast(ser, filename, hex)
 
 
 def rom_read_test_slow(ser, pages):
@@ -623,6 +636,31 @@ def lock_address_and_data(ser, address, word):
 		logging.error("Error: {0}".format(error))
 		return
 
+def write_word(ser, address, word):
+	logging.debug("Writing word {1:x} to address {0:x}".format(address, word))
+	serial_write(ser, b"WRITE_WORD\n")
+	serial_wait_on(ser, "AWAIT_ADDR_HEX")
+	serial_write(ser, bytes("{0:x}\n".format(address), "utf-8"))
+	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	serial_wait_on(ser, "AWAIT_DATA_HEX")
+	serial_write(ser, bytes("{0:04x}\n".format(word), "utf-8"))
+	
+	error = serial_wait_on(ser, "ACK_DATA", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+	error = serial_wait_on(ser, "WRITE_WORD_ACK", "ERR")
+	if error:
+		logging.error("Error: {0}".format(error))
+		return
+
+
+
 def write_protect(ser, enable):
 	if enable:
 		serial_write(ser, b"ENABLE_WRITE_PROTECT\n")
@@ -672,16 +710,30 @@ def genesis_reset_set(ser, reset):
 
 # Main
 
-def hex_format(input_str):
+def hex_format(input_str, show_addr=False, offset=0, split=64):
+	logging.error("Show_addr: {}, offset: {}, split: {}".format(show_addr, offset, split))
 	s = ""
 	for i in range(0, len(input_str), 4):
-		if i % 64 == 0:
+		if i % split == 0:
 			s += "\n"
+			if show_addr:
+				s+= "{:08x}: ".format(offset + int(i/2))
+
 		s += input_str[i:i+4] + " "
 	return s
 
 def select_port(input_port):
 	return list_ports()[-1]
+
+def parse_int(input):
+	if input.startswith("0x") or aString.startswith("0X"):
+		return int(input,16)
+	else:
+		return int(input)
+
+def parse_int_on_word_boundary(input):
+	return int(parse_int(input) /2)
+	
 
 def main():
     import argparse
@@ -744,18 +796,25 @@ def main():
     ser = get_serial(port, args.baud)
     if args.action == "debug_info":
     	debug_info(ser)
+    elif args.action == "ping":
+    	ping(ser)
     elif args.action == "read_page":
     	logging.info("{0}".format(hex_format(read_page(ser, args.action_arg).hex())))
     elif args.action == "read_page_crc":
     	logging.info("{0}".format(read_page_crc(ser, args.action_arg)))
     elif args.action == "read_pages":
-    	logging.info("{0}".format(hex_format(read_pages(ser, int(args.action_arg), int(args.action_arg2)).hex())))
+    	logging.info("{0}".format(hex_format(
+    		read_pages(ser, int(args.action_arg), int(args.action_arg2)).hex(),
+    		show_addr=True, offset=int(args.action_arg) * 256, split=32)
+    		))
     elif args.action == "write_test_page":
     	write_test_page(ser, args.action_arg)
     elif args.action == "write_fill_page":
     	write_fill_page(ser, int(args.action_arg), args.action_arg2)
     elif args.action == "write_file":
     	write_file(ser, args.action_arg)
+    elif args.action == "write_file_hex":
+    	write_file(ser, args.action_arg, hex=True)
     elif args.action == "rom_read_test":
     	rom_read_test(ser, int(args.action_arg))
     elif args.action == "rom_read_test_slow":
@@ -765,7 +824,9 @@ def main():
     elif args.action == "dump_rom":
     	dump_rom(ser, args.action_arg, args.action_arg2)
     elif args.action == "lock_address":
-    	lock_address(ser, int(args.action_arg))
+    	lock_address(ser, parse_int_on_word_boundary(args.action_arg))
+    elif args.action == "write_word":
+    	write_word(ser, parse_int_on_word_boundary(args.action_arg), parse_int(args.action_arg2))
     elif args.action == "lock_address_and_data":
     	lock_address_and_data(ser, int(args.action_arg), int(args.action_arg2))
     elif args.action == "disable_write_protect":
