@@ -118,8 +118,14 @@ def list_ports():
 
 def serial_wait_line(ser):
 	while True:
-		result = ser.readline().decode("utf-8").rstrip()
-		if len(result) == 0: continue
+		line = ser.readline()
+		try:
+			result = line.decode("utf-8").rstrip()
+			if len(result) == 0: continue
+		except:
+			logging.debug("Invalid input {0}".format(line))
+			continue
+
 		logging.debug("<========= {0}".format(result))
 		if result.startswith("DEBUG:"): continue
 		return result
@@ -672,19 +678,37 @@ def write_protect(ser, enable):
 
 def sd_files_list(ser):
 	serial_write(ser, b"LIST_SD_FILES\n")
-	serial_wait_on(ser, "ACK")
+	logging.info("\nFiles:")
+	while True:
+		line = serial_wait_line(ser)
+		if line == "ACK":
+			break
+		logging.info("\t" + line)
 	pass
 
-def sd_rom_flash(ser, rom_index):
+def sd_rom_flash(ser, filename):
 	serial_write(ser, b"FLASH_SD_ROM\n")
-	serial_wait_on(ser, "AWAIT_ADDR_HEX")
-	serial_write(ser, bytes("{0:x}\n".format(rom_index), "utf-8"))
-	error = serial_wait_on(ser, "ACK_ADDR", "ERR")
+	serial_wait_on(ser, "AWAIT_STR")
+	serial_write(ser, bytes(filename, "utf-8"))
+	error = serial_wait_on(ser, "ACK_STR", "ERR")
 	if error:
 		logging.error("Error: {0}".format(error))
 		return
 
-	serial_wait_on(ser, "ACK")
+	import re
+	expr = re.compile('Writing page: ([0-9a-fA-F]*), at addr: ([0-9a-fA-F]*), of pages: ([0-9]*)')
+	while True:
+		line = serial_wait_line(ser)
+		if line == "ACK":
+			break
+		page = int(expr.findall(line)[0][0])
+		num_pages = int(expr.findall(line)[0][2])
+		logging.info("Page {0}/{1} successfuly written [{2:.2f}%]"
+			.format(page + 1, num_pages, ((page + 1)/num_pages * 100)))
+
+	metrics = serial_wait_line(ser)
+	logging.info("Metrics: {}".format(metrics))
+
 	pass
 
 # Sega Genesis
@@ -853,10 +877,9 @@ def main():
 
     # sd card actions
     elif args.action == "sd_files_list":
-        logging.info(sd_files_list(ser));
+        sd_files_list(ser);
     elif args.action == "sd_file_flash":
-        logging.info(sd_rom_flash(ser, int(args.action_arg)));
-
+        logging.info(sd_rom_flash(ser, args.action_arg));
     else:
     	logging.error("Invalid action: {0}".format(args.action))
     # flash_rom(args.port, args.baud, args.romfile)
