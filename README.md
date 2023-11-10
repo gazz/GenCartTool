@@ -17,6 +17,7 @@ python main.py read_pages 0 5
 python main.py write_file test.bin
 python main.py verify_file test.bin 
 python main.py generate_test_rom test.bin 64
+python main.py 
 
 # genesis interaction
 python main.py /dev/cu.wchusbserial141220 genesis_reset

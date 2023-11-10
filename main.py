@@ -17,6 +17,9 @@ OUTPUT_READ_BYTES = False
 FULL_DEBUG = False
 # FULL_DEBUG = True
 
+# RESET_ON_SERIAL = False
+RESET_ON_SERIAL = True
+
 DEVICE_LOG = FULL_DEBUG or False
 DEVICE_DEBUG = FULL_DEBUG or False
 
@@ -32,7 +35,9 @@ def get_serial(port, baud):
 	ser = serial.Serial(port, baud, timeout=6)
 	# ser.xonxoff = True
 	logging.debug("Serial open, XONXOFF flow control: {0}".format(ser.xonxoff))
-	serial_wait_on(ser, "READY")
+
+	if RESET_ON_SERIAL:
+		serial_wait_on(ser, "READY")
 
 	if not DEVICE_DEBUG:
 		serial_write(ser, b'DEBUG_OFF\n')
